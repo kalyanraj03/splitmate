@@ -46,18 +46,53 @@ export default function App() {
   }, [])
 
   async function initUser(u) {
-    await fetch(`${API}/api/profiles`, {
+  setLoading(true)
+  try {
+    // Wake up Render backend first (it may be sleeping)
+    const healthCheck = await Promise.race([
+      fetch(`${API}/health`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000))
+    ])
+
+    // Create/update profile
+    const profileRes = await fetch(`${API}/api/profiles`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: u.id, name: u.user_metadata?.full_name || u.email, email: u.email, avatar_url: u.user_metadata?.avatar_url })
+      body: JSON.stringify({
+        id: u.id,
+        name: u.user_metadata?.full_name || u.email,
+        email: u.email,
+        avatar_url: u.user_metadata?.avatar_url
+      })
     })
+
+    if (!profileRes.ok) {
+      console.error('Profile API failed:', await profileRes.text())
+    }
+
     setUser(u)
-    const res = await fetch(`${API}/api/groups/user/${u.id}`)
-    const groups = await res.json()
-    if (groups && groups.length > 0) loadGroup(groups[0], u.id)
-    else setShowJoinCreate(true)
+
+    const groupRes = await fetch(`${API}/api/groups/user/${u.id}`)
+    if (groupRes.ok) {
+      const groups = await groupRes.json()
+      if (groups && groups.length > 0) {
+        loadGroup(groups[0], u.id)
+      } else {
+        setShowJoinCreate(true)
+      }
+    } else {
+      setShowJoinCreate(true)
+    }
+  } catch (err) {
+    console.error('Init failed:', err)
+    // Still show the user even if API fails
+    setUser(u)
+    setShowJoinCreate(true)
+    showToast('Backend is waking up, please wait 30 seconds and refresh ⏳')
+  } finally {
     setLoading(false)
   }
+}
 
   async function loadGroup(g, userId) {
     setGroup(g)
@@ -158,12 +193,14 @@ export default function App() {
     .filter(s => s.from === user?.id)
     .reduce((s, t) => s + t.amount, 0)
 
-  if (loading) return (
-    <div style={styles.center}>
-      <div style={styles.spinner}></div>
-      <p style={{ color:'#9b97a0', marginTop:16 }}>Loading SplitMate...</p>
-    </div>
-  )
+  iif (loading) return (
+  <div style={styles.center}>
+    <div style={styles.spinner}></div>
+    <p style={{ color:'#f5a623', marginTop:16, fontWeight:700 }}>Loading SplitMate...</p>
+    <p style={{ color:'#9b97a0', marginTop:8, fontSize:13 }}>Waking up server, please wait up to 30 seconds...</p>
+    <p style={{ color:'#5e5b66', marginTop:4, fontSize:12 }}>This only happens on first load</p>
+  </div>
+)
 
   if (!user) return (
     <div style={styles.authPage}>
