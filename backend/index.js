@@ -4,7 +4,19 @@ const { createClient } = require('@supabase/supabase-js')
 
 const app = express()
 
-app.use(cors({ origin: process.env.FRONTEND_URL || '*' }))
+app.use(cors({
+  origin: function(origin, callback) {
+    // Allow all vercel.app URLs, localhost, and the specific frontend URL
+    if (!origin || 
+        origin.endsWith('.vercel.app') || 
+        origin.includes('localhost') ||
+        origin === process.env.FRONTEND_URL) {
+      callback(null, true)
+    } else {
+      callback(new Error('Not allowed by CORS'))
+    }
+  }
+}))
 app.use(express.json())
 
 const supabase = createClient(
