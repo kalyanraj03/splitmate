@@ -6,11 +6,7 @@ const app = express()
 
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow all vercel.app URLs, localhost, and the specific frontend URL
-    if (!origin || 
-        origin.endsWith('.vercel.app') || 
-        origin.includes('localhost') ||
-        origin === process.env.FRONTEND_URL) {
+    if (!origin || origin.endsWith('.vercel.app') || origin.includes('localhost') || origin === process.env.FRONTEND_URL) {
       callback(null, true)
     } else {
       callback(new Error('Not allowed by CORS'))
@@ -24,10 +20,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 )
 
-// Health check — keeps Render awake
+// ── HEALTH ────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date() }))
 
-// ── PROFILES ──────────────────────────────────────────
+// ── PROFILES ──────────────────────────────────────────────────────
 app.post('/api/profiles', async (req, res) => {
   const { id, name, email, avatar_url } = req.body
   const { data, error } = await supabase
@@ -45,7 +41,16 @@ app.get('/api/profiles/:id', async (req, res) => {
   res.json(data)
 })
 
-// ── GROUPS ────────────────────────────────────────────
+app.delete('/api/profiles/:id', async (req, res) => {
+  // remove from all groups first
+  await supabase.from('group_members').delete().eq('user_id', req.params.id)
+  // delete profile
+  const { error } = await supabase.from('profiles').delete().eq('id', req.params.id)
+  if (error) return res.status(400).json({ error })
+  res.json({ success: true })
+})
+
+// ── GROUPS ────────────────────────────────────────────────────────
 app.post('/api/groups', async (req, res) => {
   const { name, created_by } = req.body
   const { data: group, error } = await supabase
@@ -53,7 +58,6 @@ app.post('/api/groups', async (req, res) => {
     .insert({ name, created_by })
     .select().single()
   if (error) return res.status(400).json({ error })
-  // auto-add creator as member
   await supabase.from('group_members').insert({ group_id: group.id, user_id: created_by })
   res.json(group)
 })
@@ -64,7 +68,7 @@ app.get('/api/groups/user/:userId', async (req, res) => {
     .select('group_id, groups(*)')
     .eq('user_id', req.params.userId)
   if (error) return res.status(400).json({ error })
-  res.json(data.map(d => d.groups))
+  res.json(data.map(d => d.groups).filter(Boolean))
 })
 
 app.post('/api/groups/join', async (req, res) => {
@@ -72,13 +76,55 @@ app.post('/api/groups/join', async (req, res) => {
   const { data: group, error: ge } = await supabase
     .from('groups').select('id').eq('invite_code', invite_code).single()
   if (ge || !group) return res.status(404).json({ error: 'Invalid invite code' })
+  // check already member
+  const { data: existing } = await supabase
+    .from('group_members').select('id').eq('group_id', group.id).eq('user_id', user_id).single()
+  if (existing) return res.status(400).json({ error: 'Already a member of this group' })
   const { error } = await supabase
     .from('group_members').insert({ group_id: group.id, user_id })
   if (error) return res.status(400).json({ error })
   res.json({ group_id: group.id })
 })
 
-// ── MEMBERS ───────────────────────────────────────────
+// Rename group
+app.patch('/api/groups/:groupId/rename', async (req, res) => {
+  const { name } = req.body
+  const { data, error } = await supabase
+    .from('groups').update({ name }).eq('id', req.params.groupId).select().single()
+  if (error) return res.status(400).json({ error })
+  res.json(data)
+})
+
+// Leave group
+app.post('/api/groups/:groupId/leave', async (req, res) => {
+  const { user_id } = req.body
+  const { error } = await supabase
+    .from('group_members')
+    .delete()
+    .eq('group_id', req.params.groupId)
+    .eq('user_id', user_id)
+  if (error) return res.status(400).json({ error })
+  res.json({ success: true })
+})
+
+// Delete group (admin only)
+app.delete('/api/groups/:groupId', async (req, res) => {
+  // cascade deletes expenses, splits, members via FK
+  const { error } = await supabase
+    .from('groups').delete().eq('id', req.params.groupId)
+  if (error) return res.status(400).json({ error })
+  res.json({ success: true })
+})
+
+// Clear all expenses in a group
+app.delete('/api/groups/:groupId/clear-expenses', async (req, res) => {
+  const { error } = await supabase
+    .from('expenses').delete().eq('group_id', req.params.groupId)
+  if (error) return res.status(400).json({ error })
+  res.json({ success: true })
+})
+
+// ── MEMBERS ───────────────────────────────────────────────────────
 app.get('/api/groups/:groupId/members', async (req, res) => {
   const { data, error } = await supabase
     .from('group_members')
@@ -88,7 +134,7 @@ app.get('/api/groups/:groupId/members', async (req, res) => {
   res.json(data)
 })
 
-// ── EXPENSES ──────────────────────────────────────────
+// ── EXPENSES ──────────────────────────────────────────────────────
 app.get('/api/expenses/:groupId', async (req, res) => {
   const { data, error } = await supabase
     .from('expenses')
@@ -124,21 +170,20 @@ app.delete('/api/expenses/:id', async (req, res) => {
   res.json({ success: true })
 })
 
-// ── SETTLEMENTS (computed) ────────────────────────────
+// ── SETTLEMENTS ───────────────────────────────────────────────────
 app.get('/api/settlements/:groupId', async (req, res) => {
-  const { data: splits } = await supabase
-    .from('expense_splits')
-    .select('user_id, share, expenses(paid_by, group_id)')
-    .eq('expenses.group_id', req.params.groupId)
+  const { data: exps } = await supabase
+    .from('expenses')
+    .select('id, paid_by, amount, expense_splits(user_id, share)')
+    .eq('group_id', req.params.groupId)
 
   const balances = {}
-  ;(splits || []).forEach(s => {
-    if (!s.expenses) return
-    const payer = s.expenses.paid_by
-    const debtor = s.user_id
-    if (payer === debtor) return
-    balances[payer] = (balances[payer] || 0) + Number(s.share)
-    balances[debtor] = (balances[debtor] || 0) - Number(s.share)
+  ;(exps || []).forEach(e => {
+    ;(e.expense_splits || []).forEach(sp => {
+      if (sp.user_id === e.paid_by) return
+      balances[e.paid_by] = (balances[e.paid_by] || 0) + Number(sp.share)
+      balances[sp.user_id] = (balances[sp.user_id] || 0) - Number(sp.share)
+    })
   })
 
   const debtors = [], creditors = []
