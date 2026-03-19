@@ -368,33 +368,76 @@
       </div>
     </div>
 
+
     <!-- Members -->
     <div class="page hidden" id="section-members">
       <div class="page-header">
-        <div class="page-title">Members</div>
+        <div>
+          <div class="page-title">Members & Settings</div>
+          <div class="page-subtitle" id="members-page-subtitle">Manage your group</div>
+        </div>
       </div>
+
+      <!-- Invite Card -->
       <div class="card mb-20">
-        <div class="section-title">Invite your friends</div>
-        <div class="text-sm text-muted mt-8">Share this code — friends open the app, sign in, and enter it</div>
+        <div class="section-title">Invite Friends 🔗</div>
+        <div class="text-sm text-muted mt-8">Share this code — friends open the app, sign in with Google, and enter it</div>
         <div class="invite-box">
           <div>
             <div class="text-xs text-hint mb-4">Invite code</div>
             <div class="invite-code" id="display-invite-code">------</div>
           </div>
-          <button class="btn btn-primary" onclick="copyInviteCode()">Copy Code</button>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <button class="btn btn-primary btn-sm" onclick="copyInviteCode()">📋 Copy Code</button>
+            <button class="btn btn-ghost btn-sm" onclick="shareInvite()">🔗 Share Link</button>
+          </div>
         </div>
       </div>
-      <div class="card">
-        <div class="section-head"><div class="section-title" id="members-count">Members</div></div>
+
+      <!-- Members List -->
+      <div class="card mb-20">
+        <div class="section-head">
+          <div class="section-title" id="members-count">Members</div>
+        </div>
         <div id="members-list"></div>
       </div>
-      <div class="card">
+
+      <!-- Monthly Summary -->
+      <div class="card mb-20">
+        <div class="section-head">
+          <div class="section-title">Monthly Summary 📊</div>
+          <select class="form-input" id="summary-month-select" style="width:auto;padding:6px 10px;font-size:13px" onchange="renderMonthlySummary()"></select>
+        </div>
+        <div id="monthly-summary"></div>
+      </div>
+
+      <!-- Category Breakdown -->
+      <div class="card mb-20">
         <div class="section-title mb-12">Category Breakdown</div>
         <div id="category-breakdown" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
         <div style="margin-top:16px;padding:14px;background:var(--bg3);border-radius:12px">
           <div style="font-size:12px;color:var(--accent);font-weight:700;margin-bottom:4px">💡 Savings Suggestion</div>
           <div class="text-sm text-muted" id="savings-tip">Track more expenses to get savings suggestions!</div>
         </div>
+      </div>
+
+      <!-- Group Settings -->
+      <div class="card mb-20" style="border-color:rgba(245,166,35,.2)">
+        <div class="section-title mb-16">⚙️ Group Settings</div>
+        <div style="display:flex;gap:10px;margin-bottom:10px">
+          <input class="form-input" id="rename-group-input" placeholder="New group name..." style="flex:1">
+          <button class="btn btn-ghost btn-sm" onclick="renameGroup()">Rename</button>
+        </div>
+        <button class="btn btn-ghost w-full" style="justify-content:center;margin-bottom:10px" onclick="confirmLeaveGroup()">🚪 Leave Group</button>
+        <div id="delete-group-btn-wrap"></div>
+      </div>
+
+      <!-- Danger Zone -->
+      <div class="card" style="border-color:rgba(248,113,113,.2)">
+        <div class="section-title mb-12" style="color:var(--red)">⚠️ Danger Zone</div>
+        <div class="text-sm text-muted mb-16">These actions cannot be undone. Use carefully!</div>
+        <button class="btn btn-red w-full" style="justify-content:center;margin-bottom:10px" onclick="confirmClearExpenses()">🗑️ Clear All Expenses in This Group</button>
+        <button class="btn w-full" style="justify-content:center;background:rgba(248,113,113,0.05);color:var(--red);border:1px solid rgba(248,113,113,0.15)" onclick="confirmDeleteAccount()">💣 Delete My Account & All Data</button>
       </div>
     </div>
   </div>
@@ -1104,11 +1147,161 @@ function renderSettlements() {
 }
 
 function markSettled() {
-  showToast('Marked as settled! 🎉 (Record the payment in your UPI app)')
+  showToast('Marked as settled! 🎉 Record the payment in your UPI app')
 }
+
+// ─── GROUP MANAGEMENT ─────────────────────────────────────────────
+async function renameGroup() {
+  const name = document.getElementById('rename-group-input').value.trim()
+  if (!name) { showToast('Enter a new name!', '⚠️'); return }
+  try {
+    await apiFetch(`/api/groups/${currentGroup.id}/rename`, 'PATCH', { name })
+    currentGroup.name = name
+    document.getElementById('sidebar-group-name').textContent = '🏠 ' + name
+    document.getElementById('rename-group-input').value = ''
+    showToast(`Group renamed to "${name}" ✅`)
+    renderMembers()
+  } catch(e) { showToast('Error: ' + e.message, '❌') }
+}
+
+async function confirmLeaveGroup() {
+  const unsettled = settlements.filter(s => s.from === currentUser.id || s.to === currentUser.id)
+  const msg = unsettled.length > 0
+    ? `You have ${unsettled.length} unsettled payment(s). Are you sure you want to leave "${currentGroup.name}"?`
+    : `Are you sure you want to leave "${currentGroup.name}"?`
+  if (!confirm(msg)) return
+  try {
+    await apiFetch(`/api/groups/${currentGroup.id}/leave`, 'POST', { user_id: currentUser.id })
+    showToast('You left the group 👋')
+    currentGroup = null; members = []; expenses = []; settlements = []
+    // try to load another group
+    const groups = await apiFetch(`/api/groups/user/${currentUser.id}`)
+    if (groups && groups.length > 0) {
+      await loadGroup(groups[0])
+      showToast('Switched to ' + groups[0].name)
+    } else {
+      showScreen('setup')
+    }
+  } catch(e) { showToast('Error: ' + e.message, '❌') }
+}
+
+async function confirmDeleteGroup() {
+  if (!confirm(`DELETE "${currentGroup.name}" permanently? This will delete ALL expenses and cannot be undone!`)) return
+  if (!confirm('Are you absolutely sure? This is irreversible!')) return
+  try {
+    await apiFetch(`/api/groups/${currentGroup.id}`, 'DELETE')
+    showToast('Group deleted 🗑️')
+    currentGroup = null; members = []; expenses = []; settlements = []
+    const groups = await apiFetch(`/api/groups/user/${currentUser.id}`)
+    if (groups && groups.length > 0) {
+      await loadGroup(groups[0])
+    } else {
+      showScreen('setup')
+    }
+  } catch(e) { showToast('Error: ' + e.message, '❌') }
+}
+
+async function confirmClearExpenses() {
+  if (!confirm(`Clear ALL expenses in "${currentGroup.name}"? This cannot be undone!`)) return
+  try {
+    await apiFetch(`/api/groups/${currentGroup.id}/clear-expenses`, 'DELETE')
+    await refreshData()
+    showToast('All expenses cleared! Fresh start 🧹')
+  } catch(e) { showToast('Error: ' + e.message, '❌') }
+}
+
+async function confirmDeleteAccount() {
+  if (!confirm('Delete your account and ALL your data? This is permanent!')) return
+  if (!confirm('Last chance — this deletes EVERYTHING. Continue?')) return
+  try {
+    await apiFetch(`/api/profiles/${currentUser.id}`, 'DELETE')
+    await sb.auth.signOut()
+    showToast('Account deleted. Goodbye! 👋')
+    setTimeout(() => { currentUser = null; showScreen('auth') }, 1500)
+  } catch(e) { showToast('Error: ' + e.message, '❌') }
+}
+
+function shareInvite() {
+  const text = `Join our flat expenses on SplitMate!\nOpen: ${window.location.href}\nSign in with Google → Join Group → Enter code: ${currentGroup.invite_code}`
+  if (navigator.share) {
+    navigator.share({ title: 'SplitMate Invite', text })
+  } else {
+    navigator.clipboard.writeText(text)
+    showToast('Invite message copied! Share it with your friends 📋')
+  }
+}
+
+// ─── MONTHLY SUMMARY ──────────────────────────────────────────────
+function populateMonthSelect() {
+  const months = [...new Set(expenses.map(e => (e.date || '').slice(0,7)))].sort().reverse()
+  const now = new Date().toISOString().slice(0,7)
+  if (!months.includes(now)) months.unshift(now)
+  const sel = document.getElementById('summary-month-select')
+  if (!sel) return
+  sel.innerHTML = months.map(m => {
+    const d = new Date(m + '-01')
+    return `<option value="${m}">${d.toLocaleString('default',{month:'long',year:'numeric'})}</option>`
+  }).join('')
+}
+
+function renderMonthlySummary() {
+  const sel = document.getElementById('summary-month-select')
+  if (!sel) return
+  const month = sel.value
+  const monthExp = expenses.filter(e => (e.date || '').startsWith(month))
+  const total = monthExp.reduce((s,e) => s + Number(e.amount), 0)
+
+  const el = document.getElementById('monthly-summary')
+  if (!el) return
+
+  if (monthExp.length === 0) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>No expenses this month</div>'
+    return
+  }
+
+  // per member breakdown
+  const perMember = {}
+  members.forEach(m => perMember[m.profiles.id] = { paid: 0, owed: 0, name: m.profiles.name })
+  monthExp.forEach(e => {
+    if (perMember[e.paid_by]) perMember[e.paid_by].paid += Number(e.amount)
+    ;(e.expense_splits || []).forEach(sp => {
+      if (perMember[sp.user_id]) perMember[sp.user_id].owed += Number(sp.share)
+    })
+  })
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:16px">
+      <div style="background:var(--bg3);border-radius:10px;padding:12px;text-align:center">
+        <div class="text-xs text-hint">Total Spent</div>
+        <div class="bold text-accent" style="font-size:20px;margin-top:4px">${fmt(total)}</div>
+      </div>
+      <div style="background:var(--bg3);border-radius:10px;padding:12px;text-align:center">
+        <div class="text-xs text-hint">Transactions</div>
+        <div class="bold text-blue" style="font-size:20px;margin-top:4px">${monthExp.length}</div>
+      </div>
+      <div style="background:var(--bg3);border-radius:10px;padding:12px;text-align:center">
+        <div class="text-xs text-hint">Per Person Avg</div>
+        <div class="bold text-green" style="font-size:20px;margin-top:4px">${fmt(total/Math.max(members.length,1))}</div>
+      </div>
+    </div>
+    ${Object.entries(perMember).map(([id, m]) => {
+      const net = m.paid - m.owed
+      return `<div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--bg3);border-radius:10px;margin-bottom:8px">
+        <div class="avatar-initials" style="width:34px;height:34px;font-size:11px;background:rgba(245,166,35,.15);color:var(--accent)">${m.name.slice(0,2).toUpperCase()}</div>
+        <div style="flex:1">
+          <div class="semibold text-sm">${m.name}${id===currentUser.id?' (You)':''}</div>
+          <div class="text-xs text-muted">Paid ${fmt(m.paid)} · Owes ${fmt(m.owed)}</div>
+        </div>
+        <div class="bold" style="color:${net>=0?'var(--green)':'var(--red)'}">${net>=0?'+':''}${fmt(net)}</div>
+      </div>`
+    }).join('')}`
+}
+
+
 
 function renderMembers() {
   document.getElementById('members-count').textContent = `Members (${members.length})`
+  document.getElementById('members-page-subtitle').textContent = currentGroup?.name + ' · ' + members.length + ' members'
 
   const spent = {}
   members.forEach(m => spent[m.profiles.id] = 0)
@@ -1119,10 +1312,14 @@ function renderMembers() {
   ml.innerHTML = members.map(m => {
     const s = spent[m.profiles.id] || 0
     const pct = totalSpent > 0 ? Math.round((s/totalSpent)*100) : 0
+    const isCreator = currentGroup?.created_by === m.profiles.id
     return `<div class="member-row">
       <div class="avatar-initials" style="width:44px;height:44px;font-size:14px;background:rgba(245,166,35,.15);color:var(--accent)">${m.profiles.name.slice(0,2).toUpperCase()}</div>
       <div style="flex:1">
-        <div class="bold">${m.profiles.name}${m.profiles.id===currentUser.id?' <span style="font-size:11px;background:var(--accent-bg);color:var(--accent);padding:2px 8px;border-radius:6px">You</span>':''}</div>
+        <div class="bold">${m.profiles.name}
+          ${m.profiles.id===currentUser.id?'<span style="font-size:11px;background:var(--accent-bg);color:var(--accent);padding:2px 8px;border-radius:6px;margin-left:4px">You</span>':''}
+          ${isCreator?'<span style="font-size:11px;background:rgba(96,165,250,.15);color:var(--blue);padding:2px 8px;border-radius:6px;margin-left:4px">Admin</span>':''}
+        </div>
         <div class="text-xs text-muted">${m.profiles.email}</div>
         <div class="progress-bar mt-8"><div class="progress-fill" style="width:${pct}%;background:var(--accent)"></div></div>
       </div>
@@ -1132,6 +1329,22 @@ function renderMembers() {
       </div>
     </div>`
   }).join('')
+
+  // show delete group only for creator
+  const delWrap = document.getElementById('delete-group-btn-wrap')
+  if (delWrap) {
+    delWrap.innerHTML = currentGroup?.created_by === currentUser.id
+      ? `<button class="btn btn-red w-full" style="justify-content:center" onclick="confirmDeleteGroup()">🗑️ Delete Entire Group</button>`
+      : `<div class="text-xs text-hint text-center">Only the group admin can delete this group</div>`
+  }
+
+  // populate rename input
+  const ri = document.getElementById('rename-group-input')
+  if (ri) ri.placeholder = `Rename "${currentGroup?.name}"...`
+
+  // monthly summary
+  populateMonthSelect()
+  renderMonthlySummary()
 
   // category breakdown
   const cb = document.getElementById('category-breakdown')
@@ -1154,6 +1367,7 @@ function renderMembers() {
       `Your biggest expense is ${CATS[top.id].label} at ${fmt(top.total)}. Consider splitting ${top.id === 'food' ? 'meal orders to save ₹300–500/month per person.' : 'costs more evenly to reduce individual burden.'}`
   }
 }
+
 
 // ─── EXPORT CSV ───────────────────────────────────────────────────
 function exportCSV() {
